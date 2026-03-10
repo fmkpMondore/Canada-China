@@ -6,11 +6,29 @@ import pandas as pd
 
 
 def records_to_df(records: list[dict]) -> pd.DataFrame:
-    """Convert raw API records to a cleaned DataFrame."""
+    """Convert raw API records to a cleaned DataFrame.
+
+    UN Comtrade returns multiple rows per (year, cmdCode) because the data is
+    disaggregated by mode of transport (motCode) and re-export intermediary
+    (partner2Code).  The canonical trade value is the record where:
+      - motCode == 0   → TOTAL mode of transport (not a single-mode breakdown)
+      - partner2Code == 0 → no re-export intermediary (direct aggregate)
+    Without this filter every trade cell appears ~4–6× in the dataset, causing
+    all USD totals to be inflated by the same factor.  Ratios (China share %)
+    are also distorted because the inflation multiplier differs between World
+    and China responses.
+    """
     if not records:
         return pd.DataFrame()
 
     df = pd.DataFrame(records)
+
+    # Filter to canonical aggregate row (one row per year × commodity code)
+    if "motCode" in df.columns and "partner2Code" in df.columns:
+        df = df[
+            (df["motCode"].astype(str) == "0") &
+            (df["partner2Code"].astype(str) == "0")
+        ]
 
     # Keep only the columns we need (some may be missing)
     cols_map = {

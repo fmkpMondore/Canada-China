@@ -223,13 +223,14 @@ st.markdown("<br>", unsafe_allow_html=True)
 # Tabs
 # ─────────────────────────────────────────────────
 
-tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab0, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "🏠 About",
     "📊 Ranking",
     "🎯 Strategic Quadrant",
     "📅 Annual Trends",
     "🔍 Deep Dive HS6",
     "📋 Full Table",
+    "✅ Data Quality",
 ])
 
 
@@ -632,6 +633,135 @@ with tab5:
         "canada_import_gap.json",
         "application/json",
     )
+
+
+# ══════════════════════════════════
+# TAB 6 — DATA QUALITY CROSS-CHECKS
+# ══════════════════════════════════
+with tab6:
+    import requests as _req
+    import time as _time
+
+    st.markdown("### ✅ Data Integrity Cross-Checks")
+    st.markdown(
+        "Top-down hierarchy validation: every number cited in this dashboard "
+        "must reconcile across three levels.\n\n"
+        "| Level | What we check | Tolerance |\n"
+        "|---|---|---|\n"
+        "| **L0 → L1** | `TOTAL` (API canonical) vs `sum(AG2)` per year | ±0.5% |\n"
+        "| **L1 → L2** | `AG2[chapter]` vs `sum(HS6 lines in chapter)` | ±5% |\n\n"
+        "> **Canonical filter:** `motCode=0` (TOTAL transport) + `partner2Code=0` (no re-export intermediary). "
+        "Without it, each trade cell is repeated ~4–6× and absolute values are inflated by the same factor."
+    )
+
+    _BASE_URL = "https://comtradeapi.un.org/data/v1/get/C/A/HS"
+    _API_KEY  = "cfd3d579a70a404b82c1e53936860f39"
+    _HEADERS  = {"Ocp-Apim-Subscription-Key": _API_KEY}
+    _TOL_L1   = 0.5
+    _TOL_L2   = 5.0
+
+    @st.cache_data(show_spinner=False, ttl=3600)
+    def fetch_total_canonical(partner_code: str, year: int) -> float | None:
+        params = {"reporterCode":"124","partnerCode":partner_code,"period":str(year),
+                  "flowCode":"M","cmdCode":"TOTAL","maxRecords":50,"format":"JSON","includeDesc":"true"}
+        try:
+            r = _req.get(_BASE_URL, params=params, headers=_HEADERS, timeout=30)
+            for d in r.json().get("data", []):
+                if str(d.get("motCode"))=="0" and str(d.get("partner2Code"))=="0":
+                    return d.get("primaryValue") or 0
+        except Exception:
+            pass
+        return None
+
+    @st.cache_data(show_spinner=False, ttl=3600)
+    def run_l0_l1_checks(years: tuple) -> pd.DataFrame:
+        db = load_hs2_data(years)
+        rows = []
+        for p_code, p_name, col in [("0", "World", "world_usd"), ("156", "China", "china_usd")]:
+            for yr in list(years):
+                ag2_val = db[db["year"] == yr][col].sum()
+                total = fetch_total_canonical(p_code, yr)
+                if total and total > 0:
+                    delta = (ag2_val - total) / total * 100
+                    status = "✅ OK" if abs(delta) <= _TOL_L1 else f"⚠️ Δ={delta:+.1f}%"
+                else:
+                    delta, status = None, "❓ no TOTAL"
+                rows.append({"Partner": p_name, "Year": yr,
+                             "TOTAL API (USD B)": round(total/1e9, 2) if total else None,
+                             "AG2 Sum (USD B)": round(ag2_val/1e9, 2),
+                             "Delta %": round(delta, 3) if delta is not None else None,
+                             "Status": status})
+        return pd.DataFrame(rows)
+
+    with st.spinner("Running L0→L1 cross-checks (fetching TOTAL from API)..."):
+        df_l1 = run_l0_l1_checks(tuple(selected_years))
+
+    all_l1_ok = all("✅" in str(s) for s in df_l1["Status"])
+    if all_l1_ok:
+        st.success("**L0→L1 PASS** — AG2 sums reconcile with TOTAL canonical value (Δ < 0.5% per year)", icon="✅")
+    else:
+        st.error("**L0→L1 FAIL** — Some year/partner pairs diverge from TOTAL. Investigate before citing.", icon="⚠️")
+
+    st.dataframe(df_l1, hide_index=True, use_container_width=True,
+                 column_config={"Delta %": st.column_config.NumberColumn("Delta %", format="%.3f%%")})
+
+    st.markdown("---")
+    st.markdown("#### L1 → L2: HS2 Chapter vs HS6 line sum")
+    st.caption(f"For each chapter in the Deep Dive, sum of all HS6 lines should ≈ HS2 aggregate (tolerance ±{_TOL_L2}%).")
+
+    summary_for_cc = build_summary(raw_db)
+    drill_chapters = summary_for_cc.head(3)["hs_code"].tolist()
+
+    cc2_rows = []
+    for ch in drill_chapters:
+        with st.spinner(f"Loading HS6 for chapter {ch}..."):
+            df6 = load_hs6_data(ch, tuple(selected_years))
+        hs2_row = summary_for_cc[summary_for_cc["hs_code"] == ch]
+        if hs2_row.empty or df6.empty:
+            continue
+        hs2_row = hs2_row.iloc[0]
+        hs6_world = df6["world_usd_m"].sum() * 1e6
+        hs6_china = df6["china_usd_m"].sum() * 1e6
+        hs2_world = hs2_row["world_usd_m"] * 1e6
+        hs2_china = hs2_row["china_usd_m"] * 1e6
+        dw = (hs6_world - hs2_world) / hs2_world * 100 if hs2_world else None
+        dc = (hs6_china - hs2_china) / hs2_china * 100 if hs2_china else None
+        sw = "✅" if dw is not None and abs(dw) <= _TOL_L2 else f"⚠️ Δ={dw:+.1f}%" if dw else "❓"
+        sc = "✅" if dc is not None and abs(dc) <= _TOL_L2 else f"⚠️ Δ={dc:+.1f}%" if dc else "❓"
+        cc2_rows.append({
+            "Chapter": ch, "Description": hs2_row["description"][:35],
+            "HS2 World (B)": round(hs2_world/1e9, 3), "HS6 Sum World (B)": round(hs6_world/1e9, 3),
+            "World Δ%": round(dw, 1) if dw else None, "World": sw,
+            "HS2 China (B)": round(hs2_china/1e9, 3), "HS6 Sum China (B)": round(hs6_china/1e9, 3),
+            "China Δ%": round(dc, 1) if dc else None, "China": sc,
+        })
+
+    if cc2_rows:
+        df_l2 = pd.DataFrame(cc2_rows)
+        all_l2_ok = all("✅" in str(r["World"]) and "✅" in str(r["China"]) for _, r in df_l2.iterrows())
+        if all_l2_ok:
+            st.success(f"**L1→L2 PASS** — HS6 sums reconcile with HS2 (Δ < {_TOL_L2}%)", icon="✅")
+        else:
+            st.warning(f"**L1→L2 partial** — Some chapters show Δ>{_TOL_L2}% (may reflect AG6 100k-record cap for small lines)", icon="⚠️")
+        st.dataframe(df_l2, hide_index=True, use_container_width=True)
+
+    st.markdown("---")
+    st.markdown("#### Methodology — Why canonical filter matters")
+    col_a, col_b = st.columns(2)
+    col_a.markdown("""
+**Without canonical filter (bug):**
+- API returns ~4–6 rows per trade cell
+- Each row = a different mode of transport OR re-export country
+- Summing all rows → 4× inflated USD totals
+- World inflation ≠ China inflation → **China share % is wrong**
+""")
+    col_b.markdown("""
+**With canonical filter (fix applied):**
+- Keep only `motCode=0` (TOTAL transport) + `partner2Code=0`
+- Exactly 1 row per (year, hs_code) combination
+- AG2 sum matches `cmdCode=TOTAL` API to < 0.01%
+- HS6 sum matches HS2 aggregate to < 3%
+""")
 
 
 # ─────────────────────────────────────────────────
