@@ -49,16 +49,6 @@ st.markdown("""
   .main-header h1 { margin: 0; font-size: 1.7rem; }
   .main-header p  { margin: 4px 0 0; opacity: 0.85; font-size: 0.9rem; }
 
-  .drill-btn {
-      display: inline-block;
-      background: #1a2744;
-      border: 1px solid #e63946;
-      border-radius: 6px;
-      padding: 4px 10px;
-      font-size: 0.78rem;
-      color: #e63946;
-      cursor: pointer;
-  }
   footer { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
@@ -69,8 +59,6 @@ st.markdown("""
 # ─────────────────────────────────────────────────
 if "drill_chapter" not in st.session_state:
     st.session_state.drill_chapter = "95"
-if "active_tab" not in st.session_state:
-    st.session_state.active_tab = 0
 
 
 # ─────────────────────────────────────────────────
@@ -159,73 +147,6 @@ def build_summary(db: pd.DataFrame) -> pd.DataFrame:
 
 
 # ─────────────────────────────────────────────────
-# AI Analysis helper
-# ─────────────────────────────────────────────────
-
-def get_ai_analysis(hs_code: str, description: str, world_b: float,
-                    china_b: float, gap_b: float, share_pct: float,
-                    score: float, api_key: str):
-    """Stream Claude's trade analysis for a given HS category."""
-    try:
-        import anthropic
-    except ImportError:
-        yield "⚠️ anthropic package not installed. Add `anthropic` to requirements.txt."
-        return
-
-    if not api_key:
-        yield (
-            "⚠️ No API key found. Add `ANTHROPIC_API_KEY` to your Streamlit secrets "
-            "(Settings → Secrets in Streamlit Cloud) or as an environment variable."
-        )
-        return
-
-    client = anthropic.Anthropic(api_key=api_key)
-
-    prompt = f"""You are a senior trade analyst specializing in Canada–China bilateral commerce.
-
-Analyze this Canadian import category for strategic opportunity:
-
-**HS Chapter {hs_code} — {description}**
-
-Key metrics (aggregated 2021–2024):
-- Canada total imports from world: **USD {world_b:.1f}B**
-- China's current share: **{share_pct:.1f}%**
-- China's import value: **USD {china_b:.1f}B**
-- Non-China gap: **USD {gap_b:.1f}B**
-- Opportunity Score: **{score:.1f}** (gap × (1 - share%) in billions)
-
-Please provide a structured analysis with these sections:
-
-## 1. Market Landscape
-Brief overview of why Canada imports this category and who dominates supply today.
-
-## 2. China's Current Position
-Why does China have {share_pct:.0f}% share? What's driving it (price, scale, logistics)?
-
-## 3. The Gap Opportunity — USD {gap_b:.1f}B
-Where exactly is the untapped space? Which product sub-segments are most accessible?
-
-## 4. Top 3 Entry Strategies
-Concrete, actionable strategies for Chinese exporters to capture more of this market.
-
-## 5. Key Barriers & Risks
-Tariffs (post-2024 Canadian tariffs on Chinese EVs/steel/etc.), regulations, local competition, currency risk.
-
-## 6. 2025–2027 Outlook
-Expected trend based on trade policy, supply chain shifts, and demand dynamics.
-
-Be specific, data-grounded, and practical. Target audience: trade analysts and exporters."""
-
-    with client.messages.stream(
-        model="claude-opus-4-6",
-        max_tokens=1800,
-        messages=[{"role": "user", "content": prompt}],
-    ) as stream:
-        for text in stream.text_stream:
-            yield text
-
-
-# ─────────────────────────────────────────────────
 # Sidebar
 # ─────────────────────────────────────────────────
 
@@ -250,19 +171,8 @@ with st.sidebar:
         value=st.session_state.drill_chapter,
         key="chapter_input_sidebar",
     )
-    # Sync with session state
     if chapter_input.strip() != st.session_state.drill_chapter:
         st.session_state.drill_chapter = chapter_input.strip().zfill(2)
-
-    st.markdown("---")
-    st.markdown("**🤖 AI Analysis**")
-    ai_key = st.secrets.get("ANTHROPIC_API_KEY", "") if hasattr(st, "secrets") else ""
-    if not ai_key:
-        ai_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if ai_key:
-        st.success("API key configured ✓")
-    else:
-        st.warning("No API key — AI tab limited")
 
     st.markdown("---")
     st.caption("Source: UN Comtrade | Mondoré Consulting")
@@ -301,11 +211,11 @@ best_score   = summary["opportunity_score"].max()
 n_low_share  = (summary["china_share_pct"] < 15).sum()
 
 c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("🌍 World Total",      f"USD {total_world:,.0f} B",  f"{len(selected_years)} years")
-c2.metric("🇨🇳 China Total",      f"USD {total_china:,.0f} B",  f"{avg_share:.1f}% share")
-c3.metric("📈 Total Gap",        f"USD {total_gap:,.0f} B",    "available potential")
-c4.metric("🏆 Top Opp. Score",   f"{best_score:.0f} B USD",   "#1 category")
-c5.metric("🎯 CN share < 15%",   f"{n_low_share} categories", "low penetration")
+c1.metric("🌍 World Total",    f"USD {total_world:,.0f} B",  f"{len(selected_years)} years")
+c2.metric("🇨🇳 China Total",    f"USD {total_china:,.0f} B",  f"{avg_share:.1f}% share")
+c3.metric("📈 Total Gap",      f"USD {total_gap:,.0f} B",    "available potential")
+c4.metric("🏆 Top Opp. Score", f"{best_score:.0f} B USD",   "#1 category")
+c5.metric("🎯 CN share < 15%", f"{n_low_share} categories", "low penetration")
 
 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -313,13 +223,12 @@ st.markdown("<br>", unsafe_allow_html=True)
 # Tabs
 # ─────────────────────────────────────────────────
 
-tab0, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🏠 About",
     "📊 Ranking",
     "🎯 Strategic Quadrant",
     "📅 Annual Trends",
     "🔍 Deep Dive HS6",
-    "🤖 AI Analysis",
     "📋 Full Table",
 ])
 
@@ -370,12 +279,11 @@ for Chinese manufacturers and trading companies.
         st.markdown("### 🧭 Feature Guide")
 
         features = [
-            ("📊 Ranking", "Top opportunities ranked by Opportunity Score. Click any row to instantly open its HS6 Deep Dive."),
+            ("📊 Ranking", "Top opportunities ranked by Opportunity Score. Click any row to instantly load its HS6 Deep Dive."),
             ("🎯 Strategic Quadrant", "Bubble chart plotting all categories by gap size vs China's share. Reveals PRIORITY, GROWTH, NICHE, and SATURATED zones."),
             ("📅 Annual Trends", "Track how world imports and China's share evolved year-over-year for selected categories."),
             ("🔍 Deep Dive HS6", "Zoom into any HS2 chapter to see 6-digit product breakdown — bar chart, scatter, and full table."),
-            ("🤖 AI Analysis", "Ask Claude to generate a full strategic analysis for any category: barriers, entry strategies, outlook."),
-            ("📋 Full Table", "Searchable, sortable table of all 97 HS2 categories with download to CSV."),
+            ("📋 Full Table", "Searchable, sortable table of all 97 HS2 categories with download to CSV and JSON."),
         ]
 
         for icon_title, desc in features:
@@ -386,7 +294,7 @@ for Chinese manufacturers and trading companies.
         st.markdown("""
 1. Use the **sidebar** to set years and minimum market size
 2. Go to **📊 Ranking** — click a row to drill into products
-3. Use **🤖 AI Analysis** for strategic deep dives
+3. Explore 6-digit breakdowns in **🔍 Deep Dive HS6**
 4. Export results from **📋 Full Table**
         """)
 
@@ -409,49 +317,36 @@ with tab1:
 
     fig_rank = go.Figure()
     fig_rank.add_trace(go.Bar(
-        y=top["label"],
-        x=top["gap_usd_m"] / 1000,
-        name="Gap (non-China)",
-        orientation="h",
-        marker_color="#e63946",
+        y=top["label"], x=top["gap_usd_m"] / 1000,
+        name="Gap (non-China)", orientation="h", marker_color="#e63946",
         hovertemplate="<b>%{y}</b><br>Gap: USD %{x:,.1f} B<extra></extra>",
     ))
     fig_rank.add_trace(go.Bar(
-        y=top["label"],
-        x=top["china_usd_m"] / 1000,
-        name="China",
-        orientation="h",
-        marker_color="#f4a261",
+        y=top["label"], x=top["china_usd_m"] / 1000,
+        name="China", orientation="h", marker_color="#f4a261",
         hovertemplate="<b>%{y}</b><br>China: USD %{x:,.1f} B<extra></extra>",
     ))
     fig_rank.update_layout(
-        barmode="stack",
-        height=max(400, top_n * 28),
+        barmode="stack", height=max(400, top_n * 28),
         margin=dict(l=10, r=10, t=30, b=10),
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
         xaxis_title="USD Billions",
-        plot_bgcolor="#0e1117",
-        paper_bgcolor="#0e1117",
-        font_color="#ffffff",
-        xaxis=dict(gridcolor="#2a2a2a"),
-        yaxis=dict(gridcolor="#2a2a2a"),
+        plot_bgcolor="#0e1117", paper_bgcolor="#0e1117", font_color="#ffffff",
+        xaxis=dict(gridcolor="#2a2a2a"), yaxis=dict(gridcolor="#2a2a2a"),
     )
     st.plotly_chart(fig_rank, use_container_width=True)
 
-    # Opportunity Score chart
     st.markdown("#### Opportunity Score by Category")
     top_score = summary_filtered.head(top_n).sort_values("opportunity_score", ascending=True)
     fig_score = px.bar(
-        top_score,
-        x="opportunity_score", y="label", orientation="h",
+        top_score, x="opportunity_score", y="label", orientation="h",
         color="china_share_pct",
         color_continuous_scale=["#2ec4b6", "#f4a261", "#e63946"],
         labels={"opportunity_score": "Score (B USD)", "china_share_pct": "China Share %"},
         hover_data={"world_usd_m": True, "china_usd_m": True, "gap_usd_m": True},
     )
     fig_score.update_layout(
-        height=max(400, top_n * 28),
-        margin=dict(l=10, r=10, t=10, b=10),
+        height=max(400, top_n * 28), margin=dict(l=10, r=10, t=10, b=10),
         plot_bgcolor="#0e1117", paper_bgcolor="#0e1117", font_color="#ffffff",
         coloraxis_colorbar=dict(title="Share CN%"),
     )
@@ -462,8 +357,7 @@ with tab1:
     st.caption("Select any row below to load its 6-digit product breakdown in the **🔍 Deep Dive HS6** tab.")
 
     rank_display = (
-        summary_filtered
-        .head(top_n)
+        summary_filtered.head(top_n)
         .reset_index()[["rank", "hs_code", "description", "world_usd_m",
                          "china_usd_m", "gap_usd_m", "china_share_pct", "opportunity_score"]]
         .copy()
@@ -497,7 +391,6 @@ with tab1:
             "Open the **🔍 Deep Dive HS6** tab to see the breakdown.",
         )
 
-    # Quick drill-down chips
     st.markdown("##### Or jump directly to a top category:")
     quick_cols = st.columns(min(top_n, 8))
     for i, row in enumerate(summary_filtered.head(min(top_n, 8)).itertuples()):
@@ -539,11 +432,11 @@ with tab2:
     fig_quad.add_hline(y=med_gap,   line_dash="dash", line_color="#555555", opacity=0.7)
 
     y_max = scatter_df["gap_b"].max() * 1.05
-    fig_quad.add_annotation(x=5,  y=y_max*0.92, text="🎯 PRIORITY",  showarrow=False,
+    fig_quad.add_annotation(x=5,  y=y_max*0.92,  text="🎯 PRIORITY",   showarrow=False,
                             font=dict(color="#2ec4b6", size=13), bgcolor="rgba(0,0,0,0.5)")
-    fig_quad.add_annotation(x=55, y=y_max*0.92, text="⚡ GROWTH",   showarrow=False,
+    fig_quad.add_annotation(x=55, y=y_max*0.92,  text="⚡ GROWTH",     showarrow=False,
                             font=dict(color="#f4a261", size=13), bgcolor="rgba(0,0,0,0.5)")
-    fig_quad.add_annotation(x=5,  y=med_gap*0.15, text="🔍 NICHE",  showarrow=False,
+    fig_quad.add_annotation(x=5,  y=med_gap*0.15, text="🔍 NICHE",     showarrow=False,
                             font=dict(color="#a8b8d8", size=13), bgcolor="rgba(0,0,0,0.5)")
     fig_quad.add_annotation(x=55, y=med_gap*0.15, text="🔒 SATURATED", showarrow=False,
                             font=dict(color="#888888", size=13), bgcolor="rgba(0,0,0,0.5)")
@@ -637,11 +530,6 @@ with tab4:
         ch_share = ch_row.iloc[0]["china_share_pct"]
         st.markdown(f"**{ch_name}** — Rank #{ch_rank} | Score: {ch_score:.1f} B | China share: {ch_share:.1f}%")
 
-        # Quick link to AI analysis
-        if st.button(f"🤖 Ask AI about Chapter {ch} — {ch_name[:40]}", key="deep_dive_ai_btn"):
-            st.session_state.ai_selected_hs = ch
-            st.info("👆 Switch to the **🤖 AI Analysis** tab to see the full analysis.", icon="💡")
-
     with st.spinner(f"Loading HS6 products for chapter {ch}..."):
         hs6 = load_hs6_data(ch, tuple(selected_years))
 
@@ -690,116 +578,9 @@ with tab4:
 
 
 # ══════════════════════════════════
-# TAB 5 — AI ANALYSIS
+# TAB 5 — FULL TABLE
 # ══════════════════════════════════
 with tab5:
-    st.markdown("### 🤖 AI-Powered Trade Analysis")
-    st.caption("Ask Claude to generate a full strategic analysis for any HS2 category.")
-
-    # Pre-select from drill-down session state if set
-    if "ai_selected_hs" not in st.session_state:
-        st.session_state.ai_selected_hs = "95"
-
-    all_hs_options = summary.reset_index()[["hs_code", "description", "opportunity_score",
-                                             "china_share_pct", "world_usd_m", "china_usd_m",
-                                             "gap_usd_m"]].copy()
-    all_hs_options["label_full"] = (
-        all_hs_options["hs_code"] + " — " + all_hs_options["description"] +
-        " (Score: " + all_hs_options["opportunity_score"].round(1).astype(str) + "B)"
-    )
-
-    # Highlight unexplored chapters (those the user hasn't manually deep-dived)
-    col_sel, col_info = st.columns([2, 1])
-    with col_sel:
-        # Default to session state ai_selected_hs
-        default_idx = 0
-        for i, row in all_hs_options.iterrows():
-            if row["hs_code"] == st.session_state.ai_selected_hs:
-                default_idx = int(i)
-                break
-
-        selected_label = st.selectbox(
-            "Select HS2 Category for Analysis",
-            options=all_hs_options["label_full"].tolist(),
-            index=default_idx,
-        )
-        selected_hs_row = all_hs_options[all_hs_options["label_full"] == selected_label].iloc[0]
-
-    with col_info:
-        st.markdown("**Selected category metrics:**")
-        st.metric("Gap", f"USD {selected_hs_row['gap_usd_m']/1000:.1f}B")
-        st.metric("China Share", f"{selected_hs_row['china_share_pct']:.1f}%")
-        st.metric("Opp. Score", f"{selected_hs_row['opportunity_score']:.1f}B")
-
-    # Suggest unexplored categories
-    unexplored_suggestions = ["94", "29", "38", "87", "90", "30", "39", "85", "84", "95"]
-    st.markdown("**💡 Suggested categories for exploration:**")
-    sug_cols = st.columns(len(unexplored_suggestions))
-    for i, hs_code in enumerate(unexplored_suggestions):
-        row = all_hs_options[all_hs_options["hs_code"] == hs_code]
-        if not row.empty:
-            desc = row.iloc[0]["description"][:20]
-            score = row.iloc[0]["opportunity_score"]
-            if sug_cols[i].button(f"{hs_code}\n{desc[:12]}..\n⭐{score:.0f}B",
-                                  key=f"sug_{hs_code}", use_container_width=True):
-                st.session_state.ai_selected_hs = hs_code
-                st.rerun()
-
-    st.markdown("---")
-
-    if st.button("🚀 Generate AI Analysis", type="primary", use_container_width=True):
-        if not ai_key:
-            st.error(
-                "No ANTHROPIC_API_KEY found. "
-                "Add it in **Streamlit Cloud → Settings → Secrets**:\n\n"
-                "```toml\nANTHROPIC_API_KEY = \"sk-ant-...\"\n```"
-            )
-        else:
-            st.markdown(f"## Analysis: HS {selected_hs_row['hs_code']} — {selected_hs_row['description']}")
-
-            with st.spinner("Claude is analyzing this category..."):
-                analysis_placeholder = st.empty()
-                full_text = ""
-                for chunk in get_ai_analysis(
-                    hs_code=selected_hs_row["hs_code"],
-                    description=selected_hs_row["description"],
-                    world_b=selected_hs_row["world_usd_m"] / 1000,
-                    china_b=selected_hs_row["china_usd_m"] / 1000,
-                    gap_b=selected_hs_row["gap_usd_m"] / 1000,
-                    share_pct=selected_hs_row["china_share_pct"],
-                    score=selected_hs_row["opportunity_score"],
-                    api_key=ai_key,
-                ):
-                    full_text += chunk
-                    analysis_placeholder.markdown(full_text + "▌")
-                analysis_placeholder.markdown(full_text)
-
-            # Download button for the analysis
-            st.download_button(
-                "⬇️ Download Analysis (Markdown)",
-                full_text.encode("utf-8"),
-                f"analysis_hs{selected_hs_row['hs_code']}_{selected_hs_row['description'][:20].replace(' ', '_')}.md",
-                "text/markdown",
-            )
-    else:
-        st.info(
-            "Select a category above and click **Generate AI Analysis** to get a full "
-            "strategic report including market landscape, entry strategies, barriers, and outlook.",
-            icon="🤖",
-        )
-        if not ai_key:
-            st.warning(
-                "To enable AI analysis, add your Anthropic API key to Streamlit secrets:\n\n"
-                "**Streamlit Cloud → App settings → Secrets:**\n"
-                "```toml\nANTHROPIC_API_KEY = \"sk-ant-api...\"\n```",
-                icon="🔑",
-            )
-
-
-# ══════════════════════════════════
-# TAB 6 — FULL TABLE
-# ══════════════════════════════════
-with tab6:
     st.markdown("### Full Table — All HS2 Chapters")
 
     search = st.text_input("🔍 Search by HS code or description", "")
@@ -818,7 +599,6 @@ with tab6:
         )
         disp = disp[mask]
 
-    # Use column_config instead of .style (fixes Streamlit Cloud Styler ImportError)
     st.dataframe(
         disp,
         hide_index=True,
@@ -826,18 +606,14 @@ with tab6:
         height=600,
         column_config={
             "Score(B)": st.column_config.ProgressColumn(
-                "Score(B)",
-                min_value=0,
+                "Score(B)", min_value=0,
                 max_value=float(disp["Score(B)"].max()) if len(disp) > 0 else 1,
                 format="%.2f",
             ),
             "Share CN%": st.column_config.ProgressColumn(
-                "Share CN%",
-                min_value=0,
-                max_value=100,
-                format="%.1f%%",
+                "Share CN%", min_value=0, max_value=100, format="%.1f%%",
             ),
-            "Gap(USD M)": st.column_config.NumberColumn("Gap(USD M)", format="%,.0f"),
+            "Gap(USD M)":   st.column_config.NumberColumn("Gap(USD M)",   format="%,.0f"),
             "World(USD M)": st.column_config.NumberColumn("World(USD M)", format="%,.0f"),
             "China(USD M)": st.column_config.NumberColumn("China(USD M)", format="%,.0f"),
         },
