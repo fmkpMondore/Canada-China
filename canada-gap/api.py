@@ -108,19 +108,31 @@ def fetch_hs2_all_years(partner_code: str, years: list[int], use_demo: bool = Fa
 
 
 def fetch_hs6_chapter(partner_code: str, chapter: str, years: list[int], use_demo: bool = False) -> list[dict]:
-    """Fetch HS6-level data for a specific chapter and all specified years."""
+    """Fetch HS6-level data for a specific chapter and all specified years.
+
+    Uses cmdCode=AG6 (all HS6 subheadings) and filters to the target chapter
+    prefix. This is necessary because cmdCode=<2-digit-chapter> returns only
+    the HS2 aggregate record, not the HS6 breakdown.
+
+    The full AG6 response is cached per (partner, year), so subsequent chapter
+    queries for the same year hit the local cache and filter in memory.
+    """
     if use_demo:
         from demo_data import get_hs6_records
         print(f"  [demo] Generating synthetic HS6 records for chapter={chapter}, partner={partner_code}, years={years}")
         return get_hs6_records(partner_code, chapter, years)
 
+    chapter_prefix = str(chapter).zfill(2)
     all_records = []
     for year in years:
         records = fetch_comtrade(
             reporter_code="124",
             partner_code=partner_code,
             period=year,
-            cmd_code=str(chapter).zfill(2),
+            cmd_code="AG6",
         )
-        all_records.extend(records)
+        # Filter to the target chapter (cmdCode starts with the 2-digit prefix)
+        chapter_records = [r for r in records if str(r.get("cmdCode", "")).startswith(chapter_prefix)]
+        print(f"  [filter] chapter={chapter_prefix} year={year} → {len(chapter_records)} HS6 records (from {len(records)} AG6 total)")
+        all_records.extend(chapter_records)
     return all_records
