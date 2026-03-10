@@ -68,8 +68,8 @@ if "drill_chapter" not in st.session_state:
 @st.cache_data(show_spinner=False)
 def load_hs2_data(years: tuple) -> pd.DataFrame:
     years = list(years)
-    world_r = fetch_hs2_all_years(WORLD_CODE, years, use_demo=True)
-    china_r = fetch_hs2_all_years(CHINA_CODE, years, use_demo=True)
+    world_r = fetch_hs2_all_years(WORLD_CODE, years, use_demo=False)
+    china_r = fetch_hs2_all_years(CHINA_CODE, years, use_demo=False)
 
     world_df = records_to_df(world_r)
     china_df = records_to_df(china_r)
@@ -100,8 +100,8 @@ def load_hs2_data(years: tuple) -> pd.DataFrame:
 @st.cache_data(show_spinner=False)
 def load_hs6_data(chapter: str, years: tuple) -> pd.DataFrame:
     years = list(years)
-    world_r = fetch_hs6_chapter(WORLD_CODE, chapter, years, use_demo=True)
-    china_r = fetch_hs6_chapter(CHINA_CODE, chapter, years, use_demo=True)
+    world_r = fetch_hs6_chapter(WORLD_CODE, chapter, years, use_demo=False)
+    china_r = fetch_hs6_chapter(CHINA_CODE, chapter, years, use_demo=False)
 
     world_df = records_to_df(world_r)
     china_df = records_to_df(china_r)
@@ -299,10 +299,10 @@ for Chinese manufacturers and trading companies.
         """)
 
     st.markdown("---")
-    st.info(
-        "**Demo Mode** — All data shown is synthetic but calibrated to real 2021–2024 "
-        "Statistics Canada figures. Activate live API in `config.py` for production use.",
-        icon="ℹ️",
+    st.success(
+        "**Live Mode** — Data is fetched directly from the UN Comtrade API "
+        "(real bilateral trade statistics, Canada reporter, 2021–2024).",
+        icon="✅",
     )
 
 
@@ -640,6 +640,6 @@ with tab5:
 st.markdown("---")
 st.markdown(
     "<center><small>Mondoré Consulting · Canada Import Gap Analysis · "
-    "Source: UN Comtrade API · Data: realistic demo synthetic</small></center>",
+    "Source: UN Comtrade API · Live production data</small></center>",
     unsafe_allow_html=True,
 )
