@@ -1,8 +1,8 @@
 """
 Canada Import Gap Dashboard — Streamlit + Plotly
-Visualização interativa das importações do Canadá: Mundo vs China
+Interactive visualization of Canada's imports: World vs China
 
-Rodar: streamlit run dashboard.py
+Run: streamlit run dashboard.py
 """
 
 import sys
@@ -13,14 +13,13 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 from config import DEFAULT_YEARS, CHINA_CODE, WORLD_CODE
 from api import fetch_hs2_all_years, fetch_hs6_chapter
 from analysis import records_to_df
 
 # ─────────────────────────────────────────────────
-# Config da página
+# Page config
 # ─────────────────────────────────────────────────
 st.set_page_config(
     page_title="Canada Import Gap — Mondoré",
@@ -29,10 +28,9 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Tema / CSS custom
+# Custom CSS
 st.markdown("""
 <style>
-  /* Fundo escuro nos cards de métrica */
   [data-testid="metric-container"] {
       background: #1a2744;
       border-radius: 10px;
@@ -43,7 +41,6 @@ st.markdown("""
   [data-testid="metric-container"] [data-testid="stMetricValue"] { color: #ffffff !important; font-size: 1.4rem; }
   [data-testid="metric-container"] [data-testid="stMetricDelta"] { font-size: 0.75rem; }
 
-  /* Header */
   .main-header {
       background: linear-gradient(135deg, #1a2744 0%, #e63946 100%);
       color: white; padding: 20px 28px; border-radius: 12px;
@@ -52,14 +49,32 @@ st.markdown("""
   .main-header h1 { margin: 0; font-size: 1.7rem; }
   .main-header p  { margin: 4px 0 0; opacity: 0.85; font-size: 0.9rem; }
 
-  /* Ocultar rodapé Streamlit */
+  .drill-btn {
+      display: inline-block;
+      background: #1a2744;
+      border: 1px solid #e63946;
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 0.78rem;
+      color: #e63946;
+      cursor: pointer;
+  }
   footer { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
 
 # ─────────────────────────────────────────────────
-# Carregamento de dados (com cache)
+# Session state
+# ─────────────────────────────────────────────────
+if "drill_chapter" not in st.session_state:
+    st.session_state.drill_chapter = "95"
+if "active_tab" not in st.session_state:
+    st.session_state.active_tab = 0
+
+
+# ─────────────────────────────────────────────────
+# Data loading (cached)
 # ─────────────────────────────────────────────────
 
 @st.cache_data(show_spinner=False)
@@ -144,13 +159,80 @@ def build_summary(db: pd.DataFrame) -> pd.DataFrame:
 
 
 # ─────────────────────────────────────────────────
+# AI Analysis helper
+# ─────────────────────────────────────────────────
+
+def get_ai_analysis(hs_code: str, description: str, world_b: float,
+                    china_b: float, gap_b: float, share_pct: float,
+                    score: float, api_key: str):
+    """Stream Claude's trade analysis for a given HS category."""
+    try:
+        import anthropic
+    except ImportError:
+        yield "⚠️ anthropic package not installed. Add `anthropic` to requirements.txt."
+        return
+
+    if not api_key:
+        yield (
+            "⚠️ No API key found. Add `ANTHROPIC_API_KEY` to your Streamlit secrets "
+            "(Settings → Secrets in Streamlit Cloud) or as an environment variable."
+        )
+        return
+
+    client = anthropic.Anthropic(api_key=api_key)
+
+    prompt = f"""You are a senior trade analyst specializing in Canada–China bilateral commerce.
+
+Analyze this Canadian import category for strategic opportunity:
+
+**HS Chapter {hs_code} — {description}**
+
+Key metrics (aggregated 2021–2024):
+- Canada total imports from world: **USD {world_b:.1f}B**
+- China's current share: **{share_pct:.1f}%**
+- China's import value: **USD {china_b:.1f}B**
+- Non-China gap: **USD {gap_b:.1f}B**
+- Opportunity Score: **{score:.1f}** (gap × (1 - share%) in billions)
+
+Please provide a structured analysis with these sections:
+
+## 1. Market Landscape
+Brief overview of why Canada imports this category and who dominates supply today.
+
+## 2. China's Current Position
+Why does China have {share_pct:.0f}% share? What's driving it (price, scale, logistics)?
+
+## 3. The Gap Opportunity — USD {gap_b:.1f}B
+Where exactly is the untapped space? Which product sub-segments are most accessible?
+
+## 4. Top 3 Entry Strategies
+Concrete, actionable strategies for Chinese exporters to capture more of this market.
+
+## 5. Key Barriers & Risks
+Tariffs (post-2024 Canadian tariffs on Chinese EVs/steel/etc.), regulations, local competition, currency risk.
+
+## 6. 2025–2027 Outlook
+Expected trend based on trade policy, supply chain shifts, and demand dynamics.
+
+Be specific, data-grounded, and practical. Target audience: trade analysts and exporters."""
+
+    with client.messages.stream(
+        model="claude-opus-4-6",
+        max_tokens=1800,
+        messages=[{"role": "user", "content": prompt}],
+    ) as stream:
+        for text in stream.text_stream:
+            yield text
+
+
+# ─────────────────────────────────────────────────
 # Sidebar
 # ─────────────────────────────────────────────────
 
 with st.sidebar:
-    st.markdown("## 🍁 Filtros")
+    st.markdown("## 🍁 Filters")
     selected_years = st.multiselect(
-        "Anos",
+        "Years",
         options=[2021, 2022, 2023, 2024],
         default=[2021, 2022, 2023, 2024],
     )
@@ -158,23 +240,40 @@ with st.sidebar:
         selected_years = [2024]
 
     st.markdown("---")
-    top_n = st.slider("Nº de categorias no ranking", 5, 30, 15)
-    min_world = st.slider("Mercado mínimo (USD B)", 0, 50, 0)
+    top_n = st.slider("# categories in ranking", 5, 30, 15)
+    min_world = st.slider("Min. market size (USD B)", 0, 50, 0)
 
     st.markdown("---")
     st.markdown("**Deep Dive — HS2 Chapter**")
-    chapter_input = st.text_input("Capítulo HS (2 dígitos)", value="95")
+    chapter_input = st.text_input(
+        "HS Chapter (2 digits)",
+        value=st.session_state.drill_chapter,
+        key="chapter_input_sidebar",
+    )
+    # Sync with session state
+    if chapter_input.strip() != st.session_state.drill_chapter:
+        st.session_state.drill_chapter = chapter_input.strip().zfill(2)
 
     st.markdown("---")
-    st.caption("Fonte: UN Comtrade | Mondoré Consulting")
-    st.caption("Dados: demo mode (sintéticos realistas)")
+    st.markdown("**🤖 AI Analysis**")
+    ai_key = st.secrets.get("ANTHROPIC_API_KEY", "") if hasattr(st, "secrets") else ""
+    if not ai_key:
+        ai_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if ai_key:
+        st.success("API key configured ✓")
+    else:
+        st.warning("No API key — AI tab limited")
+
+    st.markdown("---")
+    st.caption("Source: UN Comtrade | Mondoré Consulting")
+    st.caption("Data: demo mode (realistic synthetic)")
 
 
 # ─────────────────────────────────────────────────
-# Carrega dados
+# Load data
 # ─────────────────────────────────────────────────
 
-with st.spinner("Carregando dados..."):
+with st.spinner("Loading data..."):
     raw_db = load_hs2_data(tuple(selected_years))
     summary = build_summary(raw_db)
     summary_filtered = summary[summary["world_usd_m"] >= min_world * 1000]
@@ -186,7 +285,7 @@ with st.spinner("Carregando dados..."):
 st.markdown("""
 <div class="main-header">
   <h1>🍁 Canada Import Gap Analysis</h1>
-  <p>Oportunidades de exportação chinesa no mercado canadense · Mondoré Consulting</p>
+  <p>Chinese export opportunities in the Canadian market · Mondoré Consulting</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -202,11 +301,11 @@ best_score   = summary["opportunity_score"].max()
 n_low_share  = (summary["china_share_pct"] < 15).sum()
 
 c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("🌍 Total Mundo",      f"USD {total_world:,.0f} B",  f"{len(selected_years)} anos")
-c2.metric("🇨🇳 Total China",      f"USD {total_china:,.0f} B",  f"{avg_share:.1f}% share")
-c3.metric("📈 Gap Total",        f"USD {total_gap:,.0f} B",    "potencial disponível")
-c4.metric("🏆 Maior Opp. Score", f"{best_score:.0f} B USD",   "categoria top 1")
-c5.metric("🎯 CN share < 15%",   f"{n_low_share} categorias", "baixa penetração")
+c1.metric("🌍 World Total",      f"USD {total_world:,.0f} B",  f"{len(selected_years)} years")
+c2.metric("🇨🇳 China Total",      f"USD {total_china:,.0f} B",  f"{avg_share:.1f}% share")
+c3.metric("📈 Total Gap",        f"USD {total_gap:,.0f} B",    "available potential")
+c4.metric("🏆 Top Opp. Score",   f"{best_score:.0f} B USD",   "#1 category")
+c5.metric("🎯 CN share < 15%",   f"{n_low_share} categories", "low penetration")
 
 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -214,34 +313,109 @@ st.markdown("<br>", unsafe_allow_html=True)
 # Tabs
 # ─────────────────────────────────────────────────
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "📊 Ranking", "🎯 Quadrante Estratégico", "📅 Tendência Anual",
-    "🔍 Deep Dive HS6", "📋 Tabela Completa"
+tab0, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "🏠 About",
+    "📊 Ranking",
+    "🎯 Strategic Quadrant",
+    "📅 Annual Trends",
+    "🔍 Deep Dive HS6",
+    "🤖 AI Analysis",
+    "📋 Full Table",
 ])
+
+
+# ══════════════════════════════════
+# TAB 0 — HOME / ABOUT
+# ══════════════════════════════════
+with tab0:
+    st.markdown("## 🍁 Canada Import Gap Analysis")
+    st.markdown(
+        "A strategic intelligence tool built by **Mondoré Consulting** to identify "
+        "Chinese export opportunities in the Canadian market — powered by UN Comtrade data."
+    )
+
+    col_l, col_r = st.columns([3, 2])
+
+    with col_l:
+        st.markdown("### 🎯 Objective")
+        st.markdown("""
+Canada imports over **USD 600 billion** in goods annually. China currently supplies
+roughly **15–20%** of that total — but the share varies enormously across product categories.
+
+This dashboard maps the **import gap**: categories where Canada buys heavily from the world
+but China's penetration remains low. These gaps represent actionable export opportunities
+for Chinese manufacturers and trading companies.
+        """)
+
+        st.markdown("### 📐 Methodology")
+        st.markdown("""
+| Metric | Definition |
+|---|---|
+| **World Imports** | Total Canadian imports from all countries |
+| **China Imports** | Canadian imports specifically from China |
+| **Gap** | World − China = volume not yet captured by China |
+| **China Share %** | China / World × 100 |
+| **Opportunity Score** | Gap × (1 − Share%) — rewards both large gap AND low penetration |
+        """)
+
+        st.markdown("### 🗂️ Data Source")
+        st.markdown("""
+- **UN Comtrade API** — official bilateral trade statistics
+- Coverage: HS2 chapters (97 product categories) × years 2021–2024
+- Current mode: **Realistic synthetic data** (demo) based on published Statistics Canada figures
+- Live API mode: available with a valid UN Comtrade subscription key
+        """)
+
+    with col_r:
+        st.markdown("### 🧭 Feature Guide")
+
+        features = [
+            ("📊 Ranking", "Top opportunities ranked by Opportunity Score. Click any row to instantly open its HS6 Deep Dive."),
+            ("🎯 Strategic Quadrant", "Bubble chart plotting all categories by gap size vs China's share. Reveals PRIORITY, GROWTH, NICHE, and SATURATED zones."),
+            ("📅 Annual Trends", "Track how world imports and China's share evolved year-over-year for selected categories."),
+            ("🔍 Deep Dive HS6", "Zoom into any HS2 chapter to see 6-digit product breakdown — bar chart, scatter, and full table."),
+            ("🤖 AI Analysis", "Ask Claude to generate a full strategic analysis for any category: barriers, entry strategies, outlook."),
+            ("📋 Full Table", "Searchable, sortable table of all 97 HS2 categories with download to CSV."),
+        ]
+
+        for icon_title, desc in features:
+            with st.expander(icon_title):
+                st.markdown(desc)
+
+        st.markdown("### ⚡ Quick Start")
+        st.markdown("""
+1. Use the **sidebar** to set years and minimum market size
+2. Go to **📊 Ranking** — click a row to drill into products
+3. Use **🤖 AI Analysis** for strategic deep dives
+4. Export results from **📋 Full Table**
+        """)
+
+    st.markdown("---")
+    st.info(
+        "**Demo Mode** — All data shown is synthetic but calibrated to real 2021–2024 "
+        "Statistics Canada figures. Activate live API in `config.py` for production use.",
+        icon="ℹ️",
+    )
 
 
 # ══════════════════════════════════
 # TAB 1 — RANKING
 # ══════════════════════════════════
 with tab1:
-    st.markdown(f"### Top {top_n} Oportunidades por Opportunity Score")
-    st.caption("Score = Gap × (1 − Share China%). Quanto maior o gap E menor a participação da China, maior o score.")
+    st.markdown(f"### Top {top_n} Opportunities by Opportunity Score")
+    st.caption("Score = Gap × (1 − China Share%). Higher score = larger gap AND lower Chinese penetration.")
 
     top = summary_filtered.head(top_n).sort_values("opportunity_score", ascending=True)
 
     fig_rank = go.Figure()
-
-    # Barras do gap (não capturado pela China)
     fig_rank.add_trace(go.Bar(
         y=top["label"],
         x=top["gap_usd_m"] / 1000,
-        name="Gap (não-China)",
+        name="Gap (non-China)",
         orientation="h",
         marker_color="#e63946",
         hovertemplate="<b>%{y}</b><br>Gap: USD %{x:,.1f} B<extra></extra>",
     ))
-
-    # Barras da China
     fig_rank.add_trace(go.Bar(
         y=top["label"],
         x=top["china_usd_m"] / 1000,
@@ -250,13 +424,12 @@ with tab1:
         marker_color="#f4a261",
         hovertemplate="<b>%{y}</b><br>China: USD %{x:,.1f} B<extra></extra>",
     ))
-
     fig_rank.update_layout(
         barmode="stack",
         height=max(400, top_n * 28),
         margin=dict(l=10, r=10, t=30, b=10),
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
-        xaxis_title="USD Bilhões",
+        xaxis_title="USD Billions",
         plot_bgcolor="#0e1117",
         paper_bgcolor="#0e1117",
         font_color="#ffffff",
@@ -265,128 +438,151 @@ with tab1:
     )
     st.plotly_chart(fig_rank, use_container_width=True)
 
-    # Opportunity Score separado
-    st.markdown("#### Opportunity Score por Categoria")
+    # Opportunity Score chart
+    st.markdown("#### Opportunity Score by Category")
     top_score = summary_filtered.head(top_n).sort_values("opportunity_score", ascending=True)
-
     fig_score = px.bar(
         top_score,
-        x="opportunity_score",
-        y="label",
-        orientation="h",
+        x="opportunity_score", y="label", orientation="h",
         color="china_share_pct",
         color_continuous_scale=["#2ec4b6", "#f4a261", "#e63946"],
-        labels={"opportunity_score": "Score (B USD)", "china_share_pct": "Share China %"},
+        labels={"opportunity_score": "Score (B USD)", "china_share_pct": "China Share %"},
         hover_data={"world_usd_m": True, "china_usd_m": True, "gap_usd_m": True},
     )
     fig_score.update_layout(
         height=max(400, top_n * 28),
         margin=dict(l=10, r=10, t=10, b=10),
-        plot_bgcolor="#0e1117",
-        paper_bgcolor="#0e1117",
-        font_color="#ffffff",
+        plot_bgcolor="#0e1117", paper_bgcolor="#0e1117", font_color="#ffffff",
         coloraxis_colorbar=dict(title="Share CN%"),
     )
     st.plotly_chart(fig_score, use_container_width=True)
 
+    # ── Drill-down: clickable table ──────────────────────────
+    st.markdown("#### ⚡ Click a Row → Deep Dive HS6")
+    st.caption("Select any row below to load its 6-digit product breakdown in the **🔍 Deep Dive HS6** tab.")
+
+    rank_display = (
+        summary_filtered
+        .head(top_n)
+        .reset_index()[["rank", "hs_code", "description", "world_usd_m",
+                         "china_usd_m", "gap_usd_m", "china_share_pct", "opportunity_score"]]
+        .copy()
+    )
+    rank_display.columns = ["Rank", "HS2", "Category", "World(USD M)",
+                             "China(USD M)", "Gap(USD M)", "Share CN%", "Score(B)"]
+
+    sel = st.dataframe(
+        rank_display,
+        hide_index=True,
+        use_container_width=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        column_config={
+            "Score(B)": st.column_config.ProgressColumn(
+                "Score(B)", min_value=0,
+                max_value=float(rank_display["Score(B)"].max()),
+                format="%.2f",
+            ),
+            "Share CN%": st.column_config.ProgressColumn(
+                "Share CN%", min_value=0, max_value=100, format="%.1f%%",
+            ),
+        },
+    )
+
+    if sel and sel.selection and sel.selection.get("rows"):
+        chosen = rank_display.iloc[sel.selection["rows"][0]]
+        st.session_state.drill_chapter = str(chosen["HS2"]).zfill(2)
+        st.success(
+            f"✅ Chapter **{chosen['HS2']} — {chosen['Category'][:50]}** loaded. "
+            "Open the **🔍 Deep Dive HS6** tab to see the breakdown.",
+        )
+
+    # Quick drill-down chips
+    st.markdown("##### Or jump directly to a top category:")
+    quick_cols = st.columns(min(top_n, 8))
+    for i, row in enumerate(summary_filtered.head(min(top_n, 8)).itertuples()):
+        if quick_cols[i].button(f"🔍 {row.hs_code}", help=row.description, key=f"quick_{row.hs_code}"):
+            st.session_state.drill_chapter = str(row.hs_code).zfill(2)
+            st.rerun()
+
 
 # ══════════════════════════════════
-# TAB 2 — QUADRANTE ESTRATÉGICO
+# TAB 2 — STRATEGIC QUADRANT
 # ══════════════════════════════════
 with tab2:
-    st.markdown("### Quadrante Estratégico — Tamanho do Gap vs Share da China")
+    st.markdown("### Strategic Quadrant — Gap Size vs China's Share")
     st.caption(
-        "X = share da China (menor = mais oportunidade). "
-        "Y = gap absoluto. Tamanho da bolha = mercado total."
+        "X = China's share (lower = more opportunity). "
+        "Y = absolute gap. Bubble size = total market."
     )
 
     scatter_df = summary_filtered.copy()
     scatter_df["world_b"] = scatter_df["world_usd_m"] / 1000
-    scatter_df["gap_b"] = scatter_df["gap_usd_m"] / 1000
+    scatter_df["gap_b"]   = scatter_df["gap_usd_m"] / 1000
 
-    # Linha de corte dos quadrantes
     med_share = 25
     med_gap   = scatter_df["gap_b"].median()
 
     fig_quad = px.scatter(
         scatter_df,
-        x="china_share_pct",
-        y="gap_b",
-        size="world_b",
+        x="china_share_pct", y="gap_b", size="world_b",
         color="opportunity_score",
         color_continuous_scale=["#264653", "#2ec4b6", "#f4a261", "#e63946"],
         hover_name="label",
-        hover_data={
-            "world_b": ":.1f",
-            "gap_b": ":.1f",
-            "china_share_pct": ":.1f",
-            "opportunity_score": ":.1f",
-        },
-        labels={
-            "china_share_pct": "Share China (%)",
-            "gap_b": "Gap (USD B)",
-            "world_b": "Mercado Total (B)",
-            "opportunity_score": "Opp. Score",
-        },
+        hover_data={"world_b": ":.1f", "gap_b": ":.1f",
+                    "china_share_pct": ":.1f", "opportunity_score": ":.1f"},
+        labels={"china_share_pct": "China Share (%)", "gap_b": "Gap (USD B)",
+                "world_b": "Total Market (B)", "opportunity_score": "Opp. Score"},
         size_max=60,
     )
-
-    # Linhas de quadrante
     fig_quad.add_vline(x=med_share, line_dash="dash", line_color="#555555", opacity=0.7)
     fig_quad.add_hline(y=med_gap,   line_dash="dash", line_color="#555555", opacity=0.7)
 
-    # Anotações nos quadrantes
     y_max = scatter_df["gap_b"].max() * 1.05
-    fig_quad.add_annotation(x=5,  y=y_max*0.92, text="🎯 PRIORIDADE", showarrow=False,
+    fig_quad.add_annotation(x=5,  y=y_max*0.92, text="🎯 PRIORITY",  showarrow=False,
                             font=dict(color="#2ec4b6", size=13), bgcolor="rgba(0,0,0,0.5)")
-    fig_quad.add_annotation(x=55, y=y_max*0.92, text="⚡ CRESCIMENTO", showarrow=False,
+    fig_quad.add_annotation(x=55, y=y_max*0.92, text="⚡ GROWTH",   showarrow=False,
                             font=dict(color="#f4a261", size=13), bgcolor="rgba(0,0,0,0.5)")
-    fig_quad.add_annotation(x=5,  y=med_gap*0.15, text="🔍 NICHO", showarrow=False,
+    fig_quad.add_annotation(x=5,  y=med_gap*0.15, text="🔍 NICHE",  showarrow=False,
                             font=dict(color="#a8b8d8", size=13), bgcolor="rgba(0,0,0,0.5)")
-    fig_quad.add_annotation(x=55, y=med_gap*0.15, text="🔒 SATURADO", showarrow=False,
+    fig_quad.add_annotation(x=55, y=med_gap*0.15, text="🔒 SATURATED", showarrow=False,
                             font=dict(color="#888888", size=13), bgcolor="rgba(0,0,0,0.5)")
-
     fig_quad.update_layout(
-        height=580,
-        plot_bgcolor="#0e1117",
-        paper_bgcolor="#0e1117",
-        font_color="#ffffff",
+        height=580, plot_bgcolor="#0e1117", paper_bgcolor="#0e1117", font_color="#ffffff",
         xaxis=dict(gridcolor="#2a2a2a", range=[-2, 75]),
         yaxis=dict(gridcolor="#2a2a2a"),
         margin=dict(l=10, r=10, t=10, b=10),
     )
     st.plotly_chart(fig_quad, use_container_width=True)
 
-    # Tabela dos quadrantes
     col_a, col_b = st.columns(2)
     with col_a:
-        st.markdown("**🎯 PRIORIDADE** — Gap alto, share baixo")
+        st.markdown("**🎯 PRIORITY** — High gap, low China share")
         prio = summary_filtered[
             (summary_filtered["gap_usd_m"] / 1000 >= med_gap) &
             (summary_filtered["china_share_pct"] < med_share)
         ][["hs_code", "short_desc", "gap_usd_m", "china_share_pct"]].head(8)
-        prio.columns = ["HS", "Categoria", "Gap(USD M)", "CN%"]
+        prio.columns = ["HS", "Category", "Gap(USD M)", "CN%"]
         st.dataframe(prio, hide_index=True, use_container_width=True)
     with col_b:
-        st.markdown("**⚡ CRESCIMENTO** — Gap alto, China já presente")
+        st.markdown("**⚡ GROWTH** — High gap, China already present")
         grow = summary_filtered[
             (summary_filtered["gap_usd_m"] / 1000 >= med_gap) &
             (summary_filtered["china_share_pct"] >= med_share)
         ][["hs_code", "short_desc", "gap_usd_m", "china_share_pct"]].head(8)
-        grow.columns = ["HS", "Categoria", "Gap(USD M)", "CN%"]
+        grow.columns = ["HS", "Category", "Gap(USD M)", "CN%"]
         st.dataframe(grow, hide_index=True, use_container_width=True)
 
 
 # ══════════════════════════════════
-# TAB 3 — TENDÊNCIA ANUAL
+# TAB 3 — ANNUAL TRENDS
 # ══════════════════════════════════
 with tab3:
-    st.markdown("### Tendência Anual — Evolução das Importações")
+    st.markdown("### Annual Trends — Import Evolution")
 
-    # Seletor de categorias para acompanhar
     all_labels = summary["label"].tolist()
     default_cats = all_labels[:5]
-    selected_cats = st.multiselect("Selecione categorias para acompanhar", all_labels, default=default_cats)
+    selected_cats = st.multiselect("Select categories to track", all_labels, default=default_cats)
 
     if selected_cats:
         hs_selected = [lb.split(" · ")[0] for lb in selected_cats]
@@ -394,194 +590,271 @@ with tab3:
         trend_df["label"] = trend_df["hs_code"] + " · " + trend_df["description"].str[:30]
 
         col1, col2 = st.columns(2)
-
         with col1:
-            st.markdown("#### 🌍 Importação do Mundo (USD M)")
-            fig_w = px.line(
-                trend_df,
-                x="year", y="world_usd_m", color="label",
-                markers=True,
-                labels={"world_usd_m": "USD M", "year": "Ano", "label": "Categoria"},
-            )
-            fig_w.update_layout(
-                height=350, plot_bgcolor="#0e1117", paper_bgcolor="#0e1117",
-                font_color="#ffffff", xaxis=dict(gridcolor="#2a2a2a"),
-                yaxis=dict(gridcolor="#2a2a2a"), margin=dict(t=10, b=10),
-                legend=dict(font=dict(size=9)),
-            )
+            st.markdown("#### 🌍 World Imports (USD M)")
+            fig_w = px.line(trend_df, x="year", y="world_usd_m", color="label", markers=True,
+                            labels={"world_usd_m": "USD M", "year": "Year", "label": "Category"})
+            fig_w.update_layout(height=350, plot_bgcolor="#0e1117", paper_bgcolor="#0e1117",
+                                font_color="#ffffff", xaxis=dict(gridcolor="#2a2a2a"),
+                                yaxis=dict(gridcolor="#2a2a2a"), margin=dict(t=10, b=10),
+                                legend=dict(font=dict(size=9)))
             st.plotly_chart(fig_w, use_container_width=True)
 
         with col2:
-            st.markdown("#### 🇨🇳 Share da China (%) por Ano")
-            fig_s = px.line(
-                trend_df,
-                x="year", y="china_share_pct", color="label",
-                markers=True,
-                labels={"china_share_pct": "Share %", "year": "Ano", "label": "Categoria"},
-            )
-            fig_s.update_layout(
-                height=350, plot_bgcolor="#0e1117", paper_bgcolor="#0e1117",
-                font_color="#ffffff", xaxis=dict(gridcolor="#2a2a2a"),
-                yaxis=dict(gridcolor="#2a2a2a"), margin=dict(t=10, b=10),
-                legend=dict(font=dict(size=9)),
-            )
+            st.markdown("#### 🇨🇳 China's Share (%) by Year")
+            fig_s = px.line(trend_df, x="year", y="china_share_pct", color="label", markers=True,
+                            labels={"china_share_pct": "Share %", "year": "Year", "label": "Category"})
+            fig_s.update_layout(height=350, plot_bgcolor="#0e1117", paper_bgcolor="#0e1117",
+                                font_color="#ffffff", xaxis=dict(gridcolor="#2a2a2a"),
+                                yaxis=dict(gridcolor="#2a2a2a"), margin=dict(t=10, b=10),
+                                legend=dict(font=dict(size=9)))
             st.plotly_chart(fig_s, use_container_width=True)
 
-        # Gap ao longo do tempo
-        st.markdown("#### 📈 Gap Absoluto (USD M) — Evolução")
-        fig_gap = px.area(
-            trend_df,
-            x="year", y="gap_usd_m", color="label",
-            labels={"gap_usd_m": "Gap (USD M)", "year": "Ano", "label": "Categoria"},
-        )
-        fig_gap.update_layout(
-            height=300, plot_bgcolor="#0e1117", paper_bgcolor="#0e1117",
-            font_color="#ffffff", xaxis=dict(gridcolor="#2a2a2a"),
-            yaxis=dict(gridcolor="#2a2a2a"), margin=dict(t=10, b=10),
-            legend=dict(font=dict(size=9)),
-        )
+        st.markdown("#### 📈 Absolute Gap (USD M) — Evolution")
+        fig_gap = px.area(trend_df, x="year", y="gap_usd_m", color="label",
+                          labels={"gap_usd_m": "Gap (USD M)", "year": "Year", "label": "Category"})
+        fig_gap.update_layout(height=300, plot_bgcolor="#0e1117", paper_bgcolor="#0e1117",
+                              font_color="#ffffff", xaxis=dict(gridcolor="#2a2a2a"),
+                              yaxis=dict(gridcolor="#2a2a2a"), margin=dict(t=10, b=10),
+                              legend=dict(font=dict(size=9)))
         st.plotly_chart(fig_gap, use_container_width=True)
     else:
-        st.info("Selecione ao menos uma categoria acima.")
+        st.info("Select at least one category above.")
 
 
 # ══════════════════════════════════
 # TAB 4 — DEEP DIVE HS6
 # ══════════════════════════════════
 with tab4:
-    ch = chapter_input.strip().zfill(2) if chapter_input.strip() else "95"
+    ch = st.session_state.drill_chapter.zfill(2) if st.session_state.drill_chapter else "95"
     st.markdown(f"### Deep Dive — HS Chapter {ch}")
 
-    # Busca no summary o nome do capítulo
     ch_row = summary[summary["hs_code"] == ch]
     if not ch_row.empty:
-        ch_name = ch_row.iloc[0]["description"]
-        ch_rank = ch_row.index[0]
+        ch_name  = ch_row.iloc[0]["description"]
+        ch_rank  = ch_row.index[0]
         ch_score = ch_row.iloc[0]["opportunity_score"]
         ch_share = ch_row.iloc[0]["china_share_pct"]
         st.markdown(f"**{ch_name}** — Rank #{ch_rank} | Score: {ch_score:.1f} B | China share: {ch_share:.1f}%")
 
-    with st.spinner(f"Carregando produtos HS6 do capítulo {ch}..."):
+        # Quick link to AI analysis
+        if st.button(f"🤖 Ask AI about Chapter {ch} — {ch_name[:40]}", key="deep_dive_ai_btn"):
+            st.session_state.ai_selected_hs = ch
+            st.info("👆 Switch to the **🤖 AI Analysis** tab to see the full analysis.", icon="💡")
+
+    with st.spinner(f"Loading HS6 products for chapter {ch}..."):
         hs6 = load_hs6_data(ch, tuple(selected_years))
 
     if hs6.empty:
-        st.warning("Nenhum dado encontrado para este capítulo.")
+        st.warning("No data found for this chapter.")
     else:
         c1, c2, c3 = st.columns(3)
-        c1.metric("Produtos HS6", len(hs6))
-        c2.metric("Maior gap", f"USD {hs6['gap_usd_m'].max():,.0f} M", hs6.loc[0, 'description'][:30])
-        c3.metric("Menor share CN", f"{hs6['china_share_pct'].min():.1f}%")
+        c1.metric("HS6 Products", len(hs6))
+        c2.metric("Largest gap", f"USD {hs6['gap_usd_m'].max():,.0f} M", hs6.loc[0, 'description'][:30])
+        c3.metric("Lowest CN share", f"{hs6['china_share_pct'].min():.1f}%")
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # Waterfall — top 12 produtos
         top12 = hs6.head(12)
-
         fig_dd = go.Figure()
-        fig_dd.add_trace(go.Bar(
-            x=top12["description"].str[:40],
-            y=top12["world_usd_m"],
-            name="Mundo",
-            marker_color="#264653",
-        ))
-        fig_dd.add_trace(go.Bar(
-            x=top12["description"].str[:40],
-            y=top12["china_usd_m"],
-            name="China",
-            marker_color="#f4a261",
-        ))
+        fig_dd.add_trace(go.Bar(x=top12["description"].str[:40], y=top12["world_usd_m"],
+                                name="World", marker_color="#264653"))
+        fig_dd.add_trace(go.Bar(x=top12["description"].str[:40], y=top12["china_usd_m"],
+                                name="China", marker_color="#f4a261"))
         fig_dd.update_layout(
-            barmode="group",
-            height=420,
-            title=f"Top 12 Produtos — HS {ch}",
-            plot_bgcolor="#0e1117",
-            paper_bgcolor="#0e1117",
-            font_color="#ffffff",
+            barmode="group", height=420, title=f"Top 12 Products — HS {ch}",
+            plot_bgcolor="#0e1117", paper_bgcolor="#0e1117", font_color="#ffffff",
             xaxis=dict(tickangle=-30, gridcolor="#2a2a2a"),
             yaxis=dict(title="USD M", gridcolor="#2a2a2a"),
-            legend=dict(orientation="h"),
-            margin=dict(t=40, b=80),
+            legend=dict(orientation="h"), margin=dict(t=40, b=80),
         )
         st.plotly_chart(fig_dd, use_container_width=True)
 
-        # Scatter HS6
-        st.markdown("#### Quadrante HS6 — Oportunidade por produto")
+        st.markdown("#### HS6 Quadrant — Opportunity by Product")
         fig_s6 = px.scatter(
-            hs6,
-            x="china_share_pct",
-            y="gap_usd_m",
-            size="world_usd_m",
-            color="opportunity_score",
-            hover_name="description",
-            color_continuous_scale=["#264653", "#2ec4b6", "#e63946"],
-            size_max=40,
-            labels={
-                "china_share_pct": "Share China (%)",
-                "gap_usd_m": "Gap (USD M)",
-                "world_usd_m": "Mercado Total",
-            },
+            hs6, x="china_share_pct", y="gap_usd_m", size="world_usd_m",
+            color="opportunity_score", hover_name="description",
+            color_continuous_scale=["#264653", "#2ec4b6", "#e63946"], size_max=40,
+            labels={"china_share_pct": "China Share (%)", "gap_usd_m": "Gap (USD M)",
+                    "world_usd_m": "Total Market"},
         )
-        fig_s6.update_layout(
-            height=400,
-            plot_bgcolor="#0e1117",
-            paper_bgcolor="#0e1117",
-            font_color="#ffffff",
-            xaxis=dict(gridcolor="#2a2a2a"),
-            yaxis=dict(gridcolor="#2a2a2a"),
-            margin=dict(t=10, b=10),
-        )
+        fig_s6.update_layout(height=400, plot_bgcolor="#0e1117", paper_bgcolor="#0e1117",
+                             font_color="#ffffff", xaxis=dict(gridcolor="#2a2a2a"),
+                             yaxis=dict(gridcolor="#2a2a2a"), margin=dict(t=10, b=10))
         st.plotly_chart(fig_s6, use_container_width=True)
 
-        # Tabela HS6
         display_hs6 = hs6[["hs_code", "description", "world_usd_m", "china_usd_m",
                             "gap_usd_m", "china_share_pct", "opportunity_score"]].copy()
-        display_hs6.columns = ["HS6", "Produto", "Mundo(M)", "China(M)", "Gap(M)", "Share%", "Score(B)"]
+        display_hs6.columns = ["HS6", "Product", "World(M)", "China(M)", "Gap(M)", "Share%", "Score(B)"]
         st.dataframe(display_hs6, hide_index=True, use_container_width=True)
 
 
 # ══════════════════════════════════
-# TAB 5 — TABELA COMPLETA
+# TAB 5 — AI ANALYSIS
 # ══════════════════════════════════
 with tab5:
-    st.markdown("### Tabela Completa — Todos os Capítulos HS2")
+    st.markdown("### 🤖 AI-Powered Trade Analysis")
+    st.caption("Ask Claude to generate a full strategic analysis for any HS2 category.")
 
-    # Filtro de busca
-    search = st.text_input("🔍 Buscar por HS code ou descrição", "")
+    # Pre-select from drill-down session state if set
+    if "ai_selected_hs" not in st.session_state:
+        st.session_state.ai_selected_hs = "95"
+
+    all_hs_options = summary.reset_index()[["hs_code", "description", "opportunity_score",
+                                             "china_share_pct", "world_usd_m", "china_usd_m",
+                                             "gap_usd_m"]].copy()
+    all_hs_options["label_full"] = (
+        all_hs_options["hs_code"] + " — " + all_hs_options["description"] +
+        " (Score: " + all_hs_options["opportunity_score"].round(1).astype(str) + "B)"
+    )
+
+    # Highlight unexplored chapters (those the user hasn't manually deep-dived)
+    col_sel, col_info = st.columns([2, 1])
+    with col_sel:
+        # Default to session state ai_selected_hs
+        default_idx = 0
+        for i, row in all_hs_options.iterrows():
+            if row["hs_code"] == st.session_state.ai_selected_hs:
+                default_idx = int(i)
+                break
+
+        selected_label = st.selectbox(
+            "Select HS2 Category for Analysis",
+            options=all_hs_options["label_full"].tolist(),
+            index=default_idx,
+        )
+        selected_hs_row = all_hs_options[all_hs_options["label_full"] == selected_label].iloc[0]
+
+    with col_info:
+        st.markdown("**Selected category metrics:**")
+        st.metric("Gap", f"USD {selected_hs_row['gap_usd_m']/1000:.1f}B")
+        st.metric("China Share", f"{selected_hs_row['china_share_pct']:.1f}%")
+        st.metric("Opp. Score", f"{selected_hs_row['opportunity_score']:.1f}B")
+
+    # Suggest unexplored categories
+    unexplored_suggestions = ["94", "29", "38", "87", "90", "30", "39", "85", "84", "95"]
+    st.markdown("**💡 Suggested categories for exploration:**")
+    sug_cols = st.columns(len(unexplored_suggestions))
+    for i, hs_code in enumerate(unexplored_suggestions):
+        row = all_hs_options[all_hs_options["hs_code"] == hs_code]
+        if not row.empty:
+            desc = row.iloc[0]["description"][:20]
+            score = row.iloc[0]["opportunity_score"]
+            if sug_cols[i].button(f"{hs_code}\n{desc[:12]}..\n⭐{score:.0f}B",
+                                  key=f"sug_{hs_code}", use_container_width=True):
+                st.session_state.ai_selected_hs = hs_code
+                st.rerun()
+
+    st.markdown("---")
+
+    if st.button("🚀 Generate AI Analysis", type="primary", use_container_width=True):
+        if not ai_key:
+            st.error(
+                "No ANTHROPIC_API_KEY found. "
+                "Add it in **Streamlit Cloud → Settings → Secrets**:\n\n"
+                "```toml\nANTHROPIC_API_KEY = \"sk-ant-...\"\n```"
+            )
+        else:
+            st.markdown(f"## Analysis: HS {selected_hs_row['hs_code']} — {selected_hs_row['description']}")
+
+            with st.spinner("Claude is analyzing this category..."):
+                analysis_placeholder = st.empty()
+                full_text = ""
+                for chunk in get_ai_analysis(
+                    hs_code=selected_hs_row["hs_code"],
+                    description=selected_hs_row["description"],
+                    world_b=selected_hs_row["world_usd_m"] / 1000,
+                    china_b=selected_hs_row["china_usd_m"] / 1000,
+                    gap_b=selected_hs_row["gap_usd_m"] / 1000,
+                    share_pct=selected_hs_row["china_share_pct"],
+                    score=selected_hs_row["opportunity_score"],
+                    api_key=ai_key,
+                ):
+                    full_text += chunk
+                    analysis_placeholder.markdown(full_text + "▌")
+                analysis_placeholder.markdown(full_text)
+
+            # Download button for the analysis
+            st.download_button(
+                "⬇️ Download Analysis (Markdown)",
+                full_text.encode("utf-8"),
+                f"analysis_hs{selected_hs_row['hs_code']}_{selected_hs_row['description'][:20].replace(' ', '_')}.md",
+                "text/markdown",
+            )
+    else:
+        st.info(
+            "Select a category above and click **Generate AI Analysis** to get a full "
+            "strategic report including market landscape, entry strategies, barriers, and outlook.",
+            icon="🤖",
+        )
+        if not ai_key:
+            st.warning(
+                "To enable AI analysis, add your Anthropic API key to Streamlit secrets:\n\n"
+                "**Streamlit Cloud → App settings → Secrets:**\n"
+                "```toml\nANTHROPIC_API_KEY = \"sk-ant-api...\"\n```",
+                icon="🔑",
+            )
+
+
+# ══════════════════════════════════
+# TAB 6 — FULL TABLE
+# ══════════════════════════════════
+with tab6:
+    st.markdown("### Full Table — All HS2 Chapters")
+
+    search = st.text_input("🔍 Search by HS code or description", "")
 
     disp = summary_filtered.reset_index()[
         ["rank", "hs_code", "description", "world_usd_m", "china_usd_m",
          "gap_usd_m", "china_share_pct", "opportunity_score"]
     ].copy()
-    disp.columns = ["Rank", "HS2", "Categoria", "Mundo(USD M)", "China(USD M)",
+    disp.columns = ["Rank", "HS2", "Category", "World(USD M)", "China(USD M)",
                     "Gap(USD M)", "Share CN%", "Score(B)"]
 
     if search:
         mask = (
             disp["HS2"].str.contains(search, case=False, na=False) |
-            disp["Categoria"].str.contains(search, case=False, na=False)
+            disp["Category"].str.contains(search, case=False, na=False)
         )
         disp = disp[mask]
 
+    # Use column_config instead of .style (fixes Streamlit Cloud Styler ImportError)
     st.dataframe(
-        disp.style
-            .background_gradient(subset=["Score(B)"], cmap="RdYlGn")
-            .background_gradient(subset=["Share CN%"], cmap="RdYlGn_r")
-            .format({
-                "Mundo(USD M)": "{:,.0f}",
-                "China(USD M)": "{:,.0f}",
-                "Gap(USD M)":   "{:,.0f}",
-                "Share CN%":    "{:.1f}",
-                "Score(B)":     "{:.2f}",
-            }),
+        disp,
+        hide_index=True,
         use_container_width=True,
         height=600,
+        column_config={
+            "Score(B)": st.column_config.ProgressColumn(
+                "Score(B)",
+                min_value=0,
+                max_value=float(disp["Score(B)"].max()) if len(disp) > 0 else 1,
+                format="%.2f",
+            ),
+            "Share CN%": st.column_config.ProgressColumn(
+                "Share CN%",
+                min_value=0,
+                max_value=100,
+                format="%.1f%%",
+            ),
+            "Gap(USD M)": st.column_config.NumberColumn("Gap(USD M)", format="%,.0f"),
+            "World(USD M)": st.column_config.NumberColumn("World(USD M)", format="%,.0f"),
+            "China(USD M)": st.column_config.NumberColumn("China(USD M)", format="%,.0f"),
+        },
     )
 
-    st.download_button(
+    col_dl1, col_dl2 = st.columns(2)
+    col_dl1.download_button(
         "⬇️ Download CSV",
         disp.to_csv(index=False).encode("utf-8"),
         "canada_import_gap.csv",
         "text/csv",
+    )
+    col_dl2.download_button(
+        "⬇️ Download JSON",
+        disp.to_json(orient="records", indent=2).encode("utf-8"),
+        "canada_import_gap.json",
+        "application/json",
     )
 
 
@@ -591,6 +864,6 @@ with tab5:
 st.markdown("---")
 st.markdown(
     "<center><small>Mondoré Consulting · Canada Import Gap Analysis · "
-    "Fonte: UN Comtrade API · Dados: demo sintético</small></center>",
+    "Source: UN Comtrade API · Data: realistic demo synthetic</small></center>",
     unsafe_allow_html=True,
 )
